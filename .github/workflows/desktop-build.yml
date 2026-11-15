@@ -1,0 +1,119 @@
+# DeepSeek Harness Desktop — Windows x64 免签名打包（首跑验证版）
+#
+# 放置位置：仓库内 .github/workflows/desktop-build.yml
+#
+# 说明：
+# 1. 本文件是「首跑验证版」，矩阵只含 windows-x64，用于最短路径验证
+#    checkout → node → pnpm → install → package → artifact 全链路是否通。
+#    验证通过后可换成三平台矩阵版本（mac-arm64 / mac-x64 由 macOS runner 承担）。
+# 2. 上游 package-target 只接受 mac-arm64 / mac-x64 / win-x64
+#    （见 apps/desktop/scripts/desktop-build-paths.mjs 的 SUPPORTED_TARGETS），
+#    Linux/AppImage 在解析阶段即被拒绝，因此矩阵中不包含 Linux。
+# 3. 本流水线产出「免签名」包，不需要 EV 证书或 COS 上传凭证。
+# 4. Windows 免签名打包要求 apps/desktop/.env.windows 提供 DSH_DESKTOP_APP_ID
+#    与 mandatory-update origin。这里用仓库变量覆盖，未配置时回落到本机回环占位
+#    （请求立即连接失败，不产生外部流量），仅用于 CI 测试包。
+
+name: Package Desktop (Windows x64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: '可选构建版本号（例如 0.2.2-rc.3.20261115.1）。留空则使用 apps/desktop/package.json 中的版本。'
+        required: false
+        type: string
+        default: ''
+  push:
+    tags:
+      - 'desktop-v*'
+
+concurrency:
+  group: desktop-package-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DSH_DESKTOP_PACKAGE_CACHE_DIR: ${{ github.workspace }}/.desktop-cache
+
+jobs:
+  package:
+    name: windows-x64
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Activate pnpm 11.28.5
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.28.5 --activate
+          pnpm --version
+
+      - name: Restore package cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.desktop-cache
+          key: dsh-package-win-x64-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            dsh-package-win-x64-
+
+      - name: Install dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Write .env.windows
+        shell: pwsh
+        env:
+          APP_ID: ${{ vars.DSH_DESKTOP_APP_ID || 'com.deepseek.dsh' }}
+          POLICY_ORIGIN: ${{ vars.DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN || 'https://127.0.0.1:1' }}
+          AUTH_ORIGIN: ${{ vars.DSH_DESKTOP_MANDATORY_UPDATE_AUTH_ORIGIN || 'https://127.0.0.1:1' }}
+        run: |
+          $config = '{"allowedAuthOrigins":["' + $env:AUTH_ORIGIN + '"]}'
+          $lines = @(
+            'DSH_DESKTOP_APP_ID=' + $env:APP_ID
+            'DSH_DESKTOP_AUTO_UPDATE_ENV=test'
+            'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=' + $env:POLICY_ORIGIN
+            'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=' + $config
+            'DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL=3'
+          )
+          Set-Content -LiteralPath 'apps/desktop/.env.windows' -Value $lines -Encoding utf8
+
+      - name: Package (checkout version)
+        if: inputs.build_version == ''
+        shell: bash
+        run: pnpm run package:desktop:win:x64:unsigned
+
+      - name: Package (explicit version)
+        if: inputs.build_version != ''
+        shell: bash
+        run: pnpm run package:desktop:win:x64:unsigned -- --build-version ${{ inputs.build_version }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-harness-windows-x64-unsigned
+          path: apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload packaging logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaging-logs-windows-x64
+          path: apps/desktop/.desktop-build/packaging-runs
+          if-no-files-found: ignore
+          retention-days: 14
