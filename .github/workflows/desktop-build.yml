@@ -1,18 +1,19 @@
-# DeepSeek Harness Desktop — Windows x64 免签名打包（首跑验证版）
+# DeepSeek Harness Desktop — Windows x64 免签名打包（首跑修正版 v2）
 #
-# 放置位置：仓库内 .github/workflows/desktop-build.yml
+# 放置位置：.github/workflows/desktop-build.yml
 #
-# 说明：
-# 1. 本文件是「首跑验证版」，矩阵只含 windows-x64，用于最短路径验证
-#    checkout → node → pnpm → install → package → artifact 全链路是否通。
-#    验证通过后可换成三平台矩阵版本（mac-arm64 / mac-x64 由 macOS runner 承担）。
-# 2. 上游 package-target 只接受 mac-arm64 / mac-x64 / win-x64
-#    （见 apps/desktop/scripts/desktop-build-paths.mjs 的 SUPPORTED_TARGETS），
-#    Linux/AppImage 在解析阶段即被拒绝，因此矩阵中不包含 Linux。
-# 3. 本流水线产出「免签名」包，不需要 EV 证书或 COS 上传凭证。
-# 4. Windows 免签名打包要求 apps/desktop/.env.windows 提供 DSH_DESKTOP_APP_ID
-#    与 mandatory-update origin。这里用仓库变量覆盖，未配置时回落到本机回环占位
-#    （请求立即连接失败，不产生外部流量），仅用于 CI 测试包。
+# v2 相对 v1 的修改：
+#   Package 步骤由 shell: bash 改为 shell: pwsh。
+#   原因：上游 apps/desktop/scripts/prepare-package-set.ts 直接调用 `tar -xOzf <绝对路径>`
+#   （见该文件 packedManifest 函数）。在 Git Bash 下 `tar` 解析为 GNU tar，
+#   会把 Windows 路径 `D:\a\...` 当作远程主机（host:path 语法），报
+#   「tar (child): Cannot connect to D: resolve failed」。
+#   改用 pwsh 后 `tar` 解析为 C:\Windows\System32\tar.exe（bsdtar），可正常读取盘符路径。
+#
+# 其余说明同 v1：
+#   - 上游 SUPPORTED_TARGETS 仅 mac-arm64 / mac-x64 / win-x64，Linux/AppImage 在解析阶段被拒。
+#   - 本流水线产出免签名包，不需要 EV 证书或 COS 上传凭证。
+#   - .env.windows 用仓库变量覆盖，未配置时回落到本机回环占位。
 
 name: Package Desktop (Windows x64)
 
@@ -62,6 +63,12 @@ jobs:
           corepack prepare pnpm@11.28.5 --activate
           pnpm --version
 
+      - name: Show tar implementation
+        shell: pwsh
+        run: |
+          (Get-Command tar).Source
+          tar --version
+
       - name: Restore package cache
         uses: actions/cache@v4
         with:
@@ -93,12 +100,12 @@ jobs:
 
       - name: Package (checkout version)
         if: inputs.build_version == ''
-        shell: bash
+        shell: pwsh
         run: pnpm run package:desktop:win:x64:unsigned
 
       - name: Package (explicit version)
         if: inputs.build_version != ''
-        shell: bash
+        shell: pwsh
         run: pnpm run package:desktop:win:x64:unsigned -- --build-version ${{ inputs.build_version }}
 
       - name: Upload installers
